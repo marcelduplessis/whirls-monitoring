@@ -235,9 +235,14 @@ def make_animation(
 	adt_var="adt",
 	adt_levels=(-0.7, 0.7),
 	cmap="RdBu_r",
-	fps=10,
-	interval=120,
+	fps=1,
+	interval=20,
 	dpi=200,
+	ugos_var="ugos",
+	vgos_var="vgos",
+	show_quiver=True,
+	quiver_step=6,
+	quiver_scale=4.0,
 	glider_track=None,
 	waveglider_track=None,
 ):
@@ -245,10 +250,16 @@ def make_animation(
 		raise KeyError(f"SLA variable '{sla_var}' not found in dataset")
 	if adt_var not in ds:
 		raise KeyError(f"ADT variable '{adt_var}' not found in dataset")
+	if show_quiver and ugos_var not in ds:
+		raise KeyError(f"UGOS variable '{ugos_var}' not found in dataset")
+	if show_quiver and vgos_var not in ds:
+		raise KeyError(f"VGOS variable '{vgos_var}' not found in dataset")
 
 	sla = ds[sla_var]
 	adt = ds[adt_var]
 	vmax = float(np.nanpercentile(np.abs(sla.values), 98))
+	ugos = ds[ugos_var] if show_quiver else None
+	vgos = ds[vgos_var] if show_quiver else None
 
 	proj = ccrs.PlateCarree()
 	fig = plt.figure(figsize=(14, 8), constrained_layout=True)
@@ -257,9 +268,9 @@ def make_animation(
 
 	fig.patch.set_facecolor("#f8f9fa")
 	ax.set_facecolor("#f8f9fa")
-	ax.coastlines(resolution="10m", linewidth=0.8, zorder=10)
-	ax.add_feature(cfeature.LAND, facecolor="0.85", zorder=0)
-	ax.add_feature(cfeature.RIVERS, edgecolor="white", linewidth=0.6, zorder=11)
+	ax.coastlines(resolution="10m", linewidth=0.8, zorder=5)
+	ax.add_feature(cfeature.LAND, facecolor="0.85", zorder=6)
+	ax.add_feature(cfeature.RIVERS, edgecolor="white", linewidth=0.6, zorder=7)
 
 	ax.plot(
 		[0.88], [0.96], marker="o", markersize=5, markerfacecolor="gold",
@@ -273,6 +284,7 @@ def make_animation(
 		transform=ax.transAxes, zorder=30,
 	)
 	ax.text(0.90, 0.92, "WG Melktert", transform=ax.transAxes, va="center", ha="left", fontsize=11, zorder=30)
+	quiver_key = None
 
 	gl = ax.gridlines(draw_labels=True, linewidth=0.75, color="gray", alpha=1, linestyle="--", zorder=15)
 	gl.top_labels = False
@@ -301,6 +313,36 @@ def make_animation(
 		zorder=12,
 	)
 
+	quiver = None
+	if show_quiver:
+		lon_q = np.asarray(ds[lon_name].values)[::quiver_step]
+		lat_q = np.asarray(ds[lat_name].values)[::quiver_step]
+		u0 = ugos.isel(time=0).values[::quiver_step, ::quiver_step]
+		v0 = vgos.isel(time=0).values[::quiver_step, ::quiver_step]
+		quiver = ax.quiver(
+			lon_q,
+			lat_q,
+			u0,
+			v0,
+			transform=ccrs.PlateCarree(),
+			color="black",
+			pivot="mid",
+			scale=quiver_scale,
+			width=0.0018,
+			zorder=14,
+		)
+		# Quiver key placed beneath the WG corner label.
+		quiver_key = ax.quiverkey(
+			quiver,
+			X=0.90,
+			Y=0.87,
+			U=0.5,
+			label="0.5 m/s",
+			labelpos="E",
+			coordinates="axes",
+			fontproperties={"size": 9},
+		)
+
 	cbar = plt.colorbar(pcm, ax=ax, pad=0.02, aspect=30)
 	cbar.set_label("SLA")
 	title = ax.set_title(
@@ -318,7 +360,7 @@ def make_animation(
 				lon_poly,
 				lat_poly,
 				color="tab:blue",
-				linewidth=1.0,
+				linewidth=2.0,
 				transform=ccrs.PlateCarree(),
 				zorder=13,
 			)
@@ -329,11 +371,12 @@ def make_animation(
 				lon_poly,
 				lat_poly,
 				color="tab:red",
-				linewidth=1.0,
+				linewidth=2.0,
 				transform=ccrs.PlateCarree(),
 				zorder=13,
 			)
 			lines.append(line)
+
 		return lines
 
 	eddy_lines = draw_eddy_lines(np.datetime_as_string(ds.time.values[0], unit="D"))
@@ -361,7 +404,7 @@ def make_animation(
 		)
 
 	def update(frame):
-		nonlocal pcm, contours, eddy_lines
+		nonlocal pcm, contours, eddy_lines, quiver
 
 		pcm.remove()
 		pcm = ax.pcolormesh(
@@ -387,6 +430,25 @@ def make_animation(
 			transform=ccrs.PlateCarree(),
 			zorder=12,
 		)
+
+		if show_quiver:
+			quiver.remove()
+			u_frame = ugos.isel(time=frame).values[::quiver_step, ::quiver_step]
+			v_frame = vgos.isel(time=frame).values[::quiver_step, ::quiver_step]
+			lon_q = np.asarray(ds[lon_name].values)[::quiver_step]
+			lat_q = np.asarray(ds[lat_name].values)[::quiver_step]
+			quiver = ax.quiver(
+				lon_q,
+				lat_q,
+				u_frame,
+				v_frame,
+				transform=ccrs.PlateCarree(),
+				color="black",
+				pivot="mid",
+				scale=quiver_scale,
+				width=0.0018,
+				zorder=14,
+			)
 
 		for line in eddy_lines:
 			line.remove()
@@ -416,6 +478,8 @@ def make_animation(
 		title.set_text(f"ADT/SLA {frame_date}")
 
 		artists = [pcm, title, contours]
+		if quiver is not None:
+			artists.append(quiver)
 		artists.extend(eddy_lines)
 		if sg_line is not None and sg_latest is not None:
 			artists.extend([sg_line, sg_latest])
@@ -449,18 +513,23 @@ def parse_args():
 	parser = argparse.ArgumentParser(description="Create ADT animation with eddies and glider overlays.")
 	parser.add_argument("--adt-base-dir", default=DEFAULT_ADT_BASE, help="Base directory containing month subfolders.")
 	parser.add_argument("--months", nargs="+", type=int, default=[5, 6], help="Month folders to scan under adt-base-dir.")
-	parser.add_argument("--start-date", default="2026-05-15", help="Start date (YYYY-MM-DD).")
+	parser.add_argument("--start-date", default="2026-06-01", help="Start date (YYYY-MM-DD).")
 	parser.add_argument("--end-date", default="2026-12-31", help="End date (YYYY-MM-DD).")
-	parser.add_argument("--lon-min", type=float, default=5)
-	parser.add_argument("--lon-max", type=float, default=30)
-	parser.add_argument("--lat-min", type=float, default=-42)
-	parser.add_argument("--lat-max", type=float, default=-30)
+	parser.add_argument("--lon-min", type=float, default=10)
+	parser.add_argument("--lon-max", type=float, default=20)
+	parser.add_argument("--lat-min", type=float, default=-38)
+	parser.add_argument("--lat-max", type=float, default=-32)
 	parser.add_argument("--sla-var", default="sla", help="SLA variable name in dataset.")
 	parser.add_argument("--adt-var", default="adt", help="ADT variable name in dataset.")
-	parser.add_argument("--adt-levels", nargs=2, type=float, default=[-0.7, 0.7], help="ADT contour levels.")
+	parser.add_argument("--adt-levels", nargs=2, type=float, default=[-0.3, 0.7], help="ADT contour levels.")
 	parser.add_argument("--cmap", default="RdBu_r", help="Colormap for SLA panel.")
-	parser.add_argument("--fps", type=int, default=10)
-	parser.add_argument("--interval", type=int, default=120, help="Animation interval in ms.")
+	parser.add_argument("--ugos-var", default="ugos", help="UGOS variable name in dataset.")
+	parser.add_argument("--vgos-var", default="vgos", help="VGOS variable name in dataset.")
+	parser.add_argument("--no-quiver", action="store_true", help="Disable ugos/vgos quiver overlay.")
+	parser.add_argument("--quiver-step", type=int, default=2, help="Subsample step for quiver arrows.")
+	parser.add_argument("--quiver-scale", type=float, default=20.0, help="Quiver scale (larger = shorter arrows).")
+	parser.add_argument("--fps", type=int, default=1)
+	parser.add_argument("--interval", type=int, default=20, help="Animation interval in ms.")
 	parser.add_argument("--dpi", type=int, default=200)
 	parser.add_argument("--eddy-base-url", default=DEFAULT_EDDY_BASE, help="Base URL for daily eddy geojsons.")
 	parser.add_argument("--output", default="/home/mduplessis/share/www/html/img/sla_animation_latest.gif", help="Output GIF path.")
@@ -516,6 +585,11 @@ def main():
 		adt_var=args.adt_var,
 		adt_levels=args.adt_levels,
 		cmap=args.cmap,
+		ugos_var=args.ugos_var,
+		vgos_var=args.vgos_var,
+		show_quiver=not args.no_quiver,
+		quiver_step=args.quiver_step,
+		quiver_scale=args.quiver_scale,
 		fps=args.fps,
 		interval=args.interval,
 		dpi=args.dpi,
